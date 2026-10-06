@@ -11,9 +11,9 @@
 
 
 #define BUS_CAPACITY 40
-
+#define TRAIN_CAPACITY 120
 #define COUNT_OF_BUS ((int)(sizeof(busRoute) / sizeof(busRoute[0])))
-
+#define COUNT_OF_TRAIN ((int)(sizeof(trainRoute) / sizeof(trainRoute[0])))
 
 typedef enum { BUS, TRAIN } Mode;
 
@@ -53,7 +53,11 @@ Route1 busRoute[] = {
     {"B04", "Bus 04", BUS, 3, {3, 8, 9}, {7.0, 20.0}},
     {"B05", "Bus 05", BUS, 4, {0, 5, 6, 7}, {9.0, 10.0, 8.0}}
 };
-
+Route1 trainRoute[] = {
+    {"T01", "Line 1", TRAIN, 3, {0, 1, 2}, {2.0, 8.0}},
+    {"T02", "Line 2", TRAIN, 3, {2, 4, 3}, {7.0, 5.0}},
+    {"T03", "Line 3", TRAIN, 3, {4, 8, 9}, {6.0, 15.0}}
+};
 /* One departure per route per simulated hour. */
 int routeLoad[MAX_STOPS * 2];
 
@@ -112,6 +116,27 @@ double edgeTime(Edge1 e)
     double speed = (e.mode == TRAIN) ? 60.0 : 25.0;
     return (e.distance / speed) * 60.0;
 }
+int serviceInterval(Mode mode, int hour)
+{
+    if (hour == 7 || hour == 8 || hour == 17 || hour == 18)
+        return mode == TRAIN ? 5 : 10;
+
+    if (hour >= 9 && hour <= 16)
+        return mode == TRAIN ? 10 : 15;
+
+    return mode == TRAIN ? 15 : 20;
+}
+
+double expectedWaitingTime(Mode mode, int hour)
+{
+    return serviceInterval(mode, hour) / 2.0;
+}
+
+int routeCapacity(Mode mode)
+{
+    return mode == TRAIN ? TRAIN_CAPACITY : BUS_CAPACITY;
+}
+
 
 void printRoutes(Mode mode)
 {
@@ -167,6 +192,148 @@ int bfsConnected(Graph1 *g, int start, int end)
     return 0;
 }
 
+
+/*Dijkstra*/
+int dijkstra(Graph1 *g, int start, int end,
+             int parent[], int parentEdge[])
+{
+    double dist[X];
+    int visited[X] = {0};
+    int i, j;
+
+    for (i = 0; i < X; i++) {
+        dist[i] = DBL_MAX;
+        parent[i] = -1;
+        parentEdge[i] = -1;
+    }
+
+    dist[start] = 0.0;
+
+    for (i = 0; i < X; i++) {
+        int u = -1;
+        double best = DBL_MAX;
+
+        for (j = 0; j < X; j++) {
+            if (!visited[j] && dist[j] < best) {
+                best = dist[j];
+                u = j;
+            }
+        }
+
+        if (u == -1)
+            break;
+
+        visited[u] = 1;
+
+        if (u == end)
+            break;
+
+        for (j = 0; j < g->count[u]; j++) {
+            Edge1 e = g->edges[u][j];
+            double newDist = dist[u] + edgeTime(e);
+
+            if (!visited[e.to] && newDist < dist[e.to]) {
+                dist[e.to] = newDist;
+                parent[e.to] = u;
+                parentEdge[e.to] = j;
+            }
+        }
+    }
+
+    return dist[end] != DBL_MAX;
+}
+
+/*Path Details*/
+
+int getPathDetails(Graph1 *g, int start, int end, int hour,
+                   double *distance, double *travelTime,
+                   double *waitTime, int *transfers,
+                   int path[], int pathRoute[], int *pathLength)
+{
+    int parent[X], parentEdge[X];
+    int reversePath[X], reverseEdge[X];
+    int length = 0, reverseLength = 0;
+    int current, i;
+    Mode previousMode = BUS;
+    int first = 1;
+
+    *distance = 0.0;
+    *travelTime = 0.0;
+    *waitTime = 0.0;
+    *transfers = 0;
+    *pathLength = 0;
+
+    if (start == end)
+        return 1;
+
+    if (!dijkstra(g, start, end, parent, parentEdge))
+        return 0;
+
+    current = end;
+    while (current != -1) {
+        reversePath[reverseLength] = current;
+        if (current != start)
+            reverseEdge[reverseLength] = parentEdge[current];
+        reverseLength++;
+        current = parent[current];
+    }
+
+    for (i = reverseLength - 1; i >= 0; i--)
+        path[length++] = reversePath[i];
+
+    for (i = 1; i < length; i++) {
+        int from = path[i - 1];
+        int edgeIndex = reverseEdge[length - i - 1];
+        Edge1 e = g->edges[from][edgeIndex];
+
+        pathRoute[i] = e.routeIndex;
+        *distance += e.distance;
+        *travelTime += edgeTime(e);
+
+        if (first) {
+            *waitTime += expectedWaitingTime(e.mode, hour);
+            previousMode = e.mode;
+            first = 0;
+        } else if (e.mode != previousMode) {
+            (*transfers)++;
+            *waitTime += expectedWaitingTime(e.mode, hour);
+            previousMode = e.mode;
+        }
+    }
+
+    pathRoute[0] = -1;
+    *pathLength = length;
+    return 1;
+}
+
+void printPath(Graph1 *g, int start, int end)
+{
+    int path[X], pathRoute[X], pathLength;
+    double distance, travelTime, waitTime;
+    int transfers;
+    int i;
+
+    if (!getPathDetails(g, start, end, 7,
+                        &distance, &travelTime, &waitTime,
+                        &transfers, path, pathRoute, &pathLength)) {
+        printf("  No route available.\n");
+        return;
+    }
+
+    printf("  Route : ");
+    for (i = 0; i < pathLength; i++) {
+        if (i > 0)
+            printf(" -> ");
+        printf("%s", location[path[i]]);
+    }
+
+    printf("\n  Travel Time : %.1f mins", travelTime);
+    printf("\n  Waiting Time: %.1f mins", waitTime);
+    printf("\n  Total Time  : %.1f mins", travelTime + waitTime);
+    printf("\n  Distance    : %.1f km", distance);
+    printf("\n  Transfers   : %d\n", transfers);
+}
+
 /*Main Function*/
 
 int main(void)
@@ -184,6 +351,14 @@ int main(void)
     printf("______________________________________________\n\n");
     printRoutes(BUS);
 
+
+    
+    printf("______________________________________________\n\n");
+    printf("  TRAIN ROUTES AND TRAIN NETWORK \n");
+    printf("______________________________________________\n\n");
+    printRoutes(TRAIN);
+
+
         printf("______________________________________________\n\n");
     printf("  GRAPH CONNECTIVITY TEST (BFS) \n\n");
 
@@ -192,6 +367,12 @@ int main(void)
     printf("  Pettah -> Homagama   : %s\n",
            bfsConnected(&city, 0, 8) ? "CONNECTED" : "NOT CONNECTED");
 
+
+    printf("______________________________________________\n\n");
+    printf("  DIJKSTRA FASTEST ROUTE EXAMPLE \n\n");
+
+      printf("  Pettah -> Homagama\n");
+    printPath(&city, 0, 8);
     return 0;
     
 }
