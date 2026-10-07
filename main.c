@@ -7,9 +7,9 @@
 #define X 10
 #define MAX_EDGES 30
 #define MAX_STOPS 6
-
-
-
+#define HOURS 24
+#define MAX_PASSENGERS 1000
+#define QUEUE_SIZE MAX_PASSENGERS
 #define BUS_CAPACITY 40
 #define TRAIN_CAPACITY 120
 #define COUNT_OF_BUS ((int)(sizeof(busRoute) / sizeof(busRoute[0])))
@@ -42,7 +42,25 @@ typedef struct {
     Edge1 edges[X][MAX_EDGES];
     int count[X];
 } Graph1;
+typedef struct {
+    int id;
+    int origin;
+    int destination;
+    int departureHour;
+    double distance;
+    double travelTime;
+    double waitingTime;
+    int transfers;
+    int successful;
+    int capacityRejected;
+} Passenger1;
 
+typedef struct {
+    int data[QUEUE_SIZE];
+    int front;
+    int rear;
+    int count;
+} PassengerQueue;
 /*Routes*/
 
 Route1 busRoute[] = {
@@ -58,7 +76,19 @@ Route1 trainRoute[] = {
     {"T02", "Line 2", TRAIN, 3, {2, 4, 3}, {7.0, 5.0}},
     {"T03", "Line 3", TRAIN, 3, {4, 8, 9}, {6.0, 15.0}}
 };
+/*total passengers */
+int demand[HOURS] = {
+    10, 8, 6, 6, 20, 30,
+    40, 100, 150, 100, 70, 60,
+    80, 90, 80, 90, 100, 150,
+    90, 80, 70, 20, 12, 10
+};
 
+Passenger1 passengers[MAX_PASSENGERS];
+int passengerCount = 0;
+
+/* One departure per route per simulated hour. */
+int routeLoad[MAX_STOPS * 2];
 /*Graph*/
 
 void addEdge(Graph1 *g, int from, int to, double distance,
@@ -346,8 +376,107 @@ void printPath(Graph1 *g, int start, int end)
     printf("\n  Distance    : %.1f km", distance);
     printf("\n  Transfers   : %d\n", transfers);
 }
+/*FIFO Queue*/
 
+void initQueue(PassengerQueue *q)
+{
+    q->front = 0;
+    q->rear = 0;
+    q->count = 0;
+}
 
+int enqueue(PassengerQueue *q, int passengerIndex)
+{
+    if (q->count >= QUEUE_SIZE)
+        return 0;
+
+    q->data[q->rear] = passengerIndex;
+    q->rear = (q->rear + 1) % QUEUE_SIZE;
+    q->count++;
+    return 1;
+}
+
+int dequeue(PassengerQueue *q, int *passengerIndex)
+{
+    if (q->count == 0)
+        return 0;
+
+    *passengerIndex = q->data[q->front];
+    q->front = (q->front + 1) % QUEUE_SIZE;
+    q->count--;
+    return 1;
+}
+/*Passengers*/
+
+static unsigned long passengerSeed = 123456789UL;
+
+int passengerRandom(int max)
+{
+    if (max <= 0)
+        return 0;
+
+    passengerSeed = passengerSeed * 1103515245UL + 12345UL;
+    return (int)((passengerSeed / 65536UL) % (unsigned long)max);
+}
+
+void choosePassengerTrip(int hour, int *origin, int *destination)
+{
+    do {
+        if (hour >= 7 && hour <= 9) {
+            /* Morning: inner city -> outer/work/study locations. */
+            *origin = passengerRandom(4);
+            *destination = 4 + passengerRandom(6);
+        } else if (hour >= 17 && hour <= 19) {
+            /* Evening: outer/work/study locations -> inner city. */
+            *origin = 4 + passengerRandom(6);
+            *destination = passengerRandom(4);
+        } else {
+            *origin = passengerRandom(X);
+            *destination = passengerRandom(X);
+        }
+    } while (*origin == *destination);
+}
+/*Mulmode Demostration*/
+
+void demonstrateMultimodalJourney(Graph1 *g)
+{
+    int path[] = {0, 1, 2, 4, 8};
+    int pathLength = 5;
+    int i;
+    double distance = 0.0;
+    double travelTime = 0.0;
+    double waitTime = 0.0;
+    int transfers = 0;
+
+    (void)g;
+
+    printf("______________________________________________\n\n");
+    printf("  SPECIFIC MULTIMODAL JOURNEY AT 07:00 \n");
+    printf("______________________________________________\n\n");
+    printf("  Passenger X: ");
+
+    for (i = 0; i < pathLength; i++) {
+        if (i > 0)
+            printf(" -> ");
+        printf("%s", location[path[i]]);
+    }
+
+    printf("\n  Route Used : T01 (Train) -> T02 (Train) -> B02 (Bus)\n");
+
+    distance = 2.0 + 8.0 + 7.0 + 6.0;
+    travelTime = (10.0 / 60.0 * 60.0)
+               + (7.0 / 60.0 * 60.0)
+               + (6.0 / 25.0 * 60.0);
+    transfers = 2;
+    waitTime = expectedWaitingTime(TRAIN, 7)
+             + expectedWaitingTime(BUS, 7);
+
+    printf("  Travel Time : %.1f mins\n", travelTime);
+    printf("  Waiting Time: %.1f mins\n", waitTime);
+    printf("  Total Time  : %.1f mins\n", travelTime + waitTime);
+    printf("  Distance    : %.1f km\n", distance);
+    printf("  Transfers   : %d\n", transfers);
+}
 
 /*Main Function*/
 
@@ -366,6 +495,14 @@ int main(void)
     printf("______________________________________________\n\n");
     printRoutes(BUS);
 
+    printf("______________________________________________\n\n");
+    printf("  TRAIN ROUTES AND TRAIN NETWORK \n");
+    printf("______________________________________________\n\n");
+    printRoutes(TRAIN);
+
+    demonstrateMultimodalJourney(&city);
+    simulatePassengers(&city);
+    
     printf("______________________________________________\n\n");
     printf("  GRAPH CONNECTIVITY TEST (BFS) \n\n");
 
