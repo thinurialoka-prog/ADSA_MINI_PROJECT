@@ -124,6 +124,12 @@ void buildNetwork(Graph1 *g)
                     busRoute[i].distance[j], BUS, i);
         }
     }
+    for (i = 0; i < COUNT_OF_TRAIN; i++) {
+        for (j = 0; j < trainRoute[i].stopCount - 1; j++) {
+            addEdge(g, trainRoute[i].stops[j], trainRoute[i].stops[j + 1],
+                    trainRoute[i].distance[j], TRAIN, i);
+        }
+    }
 }
 
 const char *routeName(Mode mode, int routeIndex)
