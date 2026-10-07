@@ -436,6 +436,96 @@ void choosePassengerTrip(int hour, int *origin, int *destination)
         }
     } while (*origin == *destination);
 }
+
+/*Capacity Check*/
+int reserveRouteCapacity(const int path[], int pathLength, Graph1 *g)
+{
+    int usedRoute[X];
+    int usedCount = 0;
+    int i, j;
+
+    for (i = 1; i < pathLength; i++) {
+        int from = path[i - 1];
+        int to = path[i];
+        int edgeIndex = -1;
+
+        /* Find the edge selected by Dijkstra between these vertices. */
+        for (j = 0; j < g->count[from]; j++) {
+            if (g->edges[from][j].to == to) {
+                edgeIndex = j;
+                break;
+            }
+        }
+
+        if (edgeIndex >= 0) {
+            int route = g->edges[from][edgeIndex].routeIndex;
+            int k, already = 0;
+
+            for (k = 0; k < usedCount; k++) {
+                if (usedRoute[k] == route &&
+                    g->edges[from][edgeIndex].mode == BUS) {
+                    already = 1;
+                    break;
+                }
+            }
+
+            if (!already) {
+                int capacity = routeCapacity(g->edges[from][edgeIndex].mode);
+
+                /* Route1 index spaces are separate for bus/train, so the
+                   load index uses a mode offset. */
+                int loadIndex = route;
+                if (g->edges[from][edgeIndex].mode == TRAIN)
+                    loadIndex = COUNT_OF_BUS + route;
+
+                if (routeLoad[loadIndex] >= capacity)
+                    return 0;
+
+                routeLoad[loadIndex]++;
+                usedRoute[usedCount++] = route;
+            }
+        }
+    }
+
+    return 1;
+}
+
+/*CSV Export*/
+void exportJourneyRecords(const char *filename)
+{
+    FILE *file = fopen(filename, "w");
+    int i;
+
+    if (file == NULL) {
+        printf("\nUnable to create CSV file: %s\n", filename);
+        return;
+    }
+
+    fprintf(file,
+            "PassengerID,Hour,Origin,Destination,DistanceKM,"
+            "TravelTimeMin,WaitingTimeMin,Transfers,Status,CapacityRejected\n");
+
+    for (i = 0; i < passengerCount; i++) {
+        Passenger1 *p = &passengers[i];
+
+        fprintf(file,
+                "P%03d,%02d:00,%s,%s,%.2f,%.2f,%.2f,%d,%s,%s\n",
+                p->id,
+                p->departureHour,
+                location[p->origin],
+                location[p->destination],
+                p->distance,
+                p->travelTime,
+                p->waitingTime,
+                p->transfers,
+                p->successful ? "SUCCESS" : "FAILED",
+                p->capacityRejected ? "YES" : "NO");
+    }
+
+    fclose(file);
+    printf("\nJourney records exported to %s\n", filename);
+}
+
 /*Mulmode Demostration*/
 
 void demonstrateMultimodalJourney(Graph1 *g)
@@ -478,6 +568,163 @@ void demonstrateMultimodalJourney(Graph1 *g)
     printf("  Transfers   : %d\n", transfers);
 }
 
+/*Passenger Simulation*/
+
+void simulatePassengers(Graph1 *g)
+{
+    int hour;
+    int i;
+    PassengerQueue queue;
+
+    passengerCount = 0;
+    passengerSeed = 123456789UL;
+    initQueue(&queue);
+
+    printf("______________________________________________\n\n");
+    printf("  PASSENGER DEMAND & JOURNEY SIMULATION \n");
+    printf("______________________________________________\n\n");
+
+    for (hour = 0; hour < HOURS; hour++) {
+        int queuedThisHour = 0;
+        int passengerIndex;
+
+        /* One service departure per route is assumed per hour. */
+        for (i = 0; i < COUNT_OF_BUS + COUNT_OF_TRAIN; i++)
+            routeLoad[i] = 0;
+
+        printf("\n%02d:00 - %d passengers\n",
+               hour, demand[hour]);
+
+        /* Generate passengers in arrival order and put them in FIFO queue. */
+        for (i = 0; i < demand[hour]; i++) {
+            Passenger1 *p;
+
+            if (passengerCount >= MAX_PASSENGERS)
+                break;
+
+            p = &passengers[passengerCount];
+            p->id = passengerCount + 1;
+            p->departureHour = hour;
+            p->distance = 0.0;
+            p->travelTime = 0.0;
+            p->waitingTime = 0.0;
+            p->transfers = 0;
+            p->successful = 0;
+            p->capacityRejected = 0;
+
+            choosePassengerTrip(hour, &p->origin, &p->destination);
+
+            enqueue(&queue, passengerCount);
+            passengerCount++;
+            queuedThisHour++;
+        }
+
+        /* FIFO boarding order. */
+        while (queuedThisHour > 0 && dequeue(&queue, &passengerIndex)) {
+            Passenger1 *p = &passengers[passengerIndex];
+            int path[X], pathRoute[X], pathLength;
+
+            if (getPathDetails(g,
+                               p->origin,
+                               p->destination,
+                               hour,
+                               &p->distance,
+                               &p->travelTime,
+                               &p->waitingTime,
+                               &p->transfers,
+                               path,
+                               pathRoute,
+                               &pathLength)) {
+
+                if (reserveRouteCapacity(path, pathLength, g)) {
+                    p->successful = 1;
+                } else {
+                    p->successful = 0;
+                    p->capacityRejected = 1;
+                    p->distance = 0.0;
+                    p->travelTime = 0.0;
+                    p->waitingTime = 0.0;
+                    p->transfers = 0;
+                }
+            }
+
+            queuedThisHour--;
+        }
+    }
+
+    printf("\nTotal individual passengers generated: %d\n",
+           passengerCount);
+}
+
+/*Profiling*/
+
+void profiling(void)
+{
+    int i;
+    int totalPassengers = passengerCount;
+    int successful = 0;
+    int failed = 0;
+    int capacityFailed = 0;
+    int directTrips = 0;
+    int oneTransferTrips = 0;
+    int multiTransferTrips = 0;
+    double totalTravelTime = 0.0;
+    double totalWaitingTime = 0.0;
+    double totalDistance = 0.0;
+    clock_t start = clock();
+
+    for (i = 0; i < passengerCount; i++) {
+        Passenger1 *p = &passengers[i];
+
+        if (p->successful) {
+            successful++;
+            totalTravelTime += p->travelTime;
+            totalWaitingTime += p->waitingTime;
+            totalDistance += p->distance;
+
+            if (p->transfers == 0)
+                directTrips++;
+            else if (p->transfers == 1)
+                oneTransferTrips++;
+            else
+                multiTransferTrips++;
+        } else {
+            failed++;
+            if (p->capacityRejected)
+                capacityFailed++;
+        }
+    }
+
+    clock_t end = clock();
+
+    printf("______________________________________________\n\n");
+    printf("  SYSTEM EFFICIENCY PROFILING \n");
+    printf("______________________________________________\n\n");
+
+    printf("  Total Passengers Simulated : %d\n", totalPassengers);
+    printf("  Successful Journeys        : %d\n", successful);
+    printf("  Failed Journeys            : %d\n", failed);
+    printf("  Capacity-Rejected Journeys : %d\n", capacityFailed);
+    printf("  Success Completion Rate    : %.1f%%\n",
+           totalPassengers > 0 ? successful * 100.0 / totalPassengers : 0.0);
+    printf("  Average Travel Time        : %.1f mins\n",
+           successful > 0 ? totalTravelTime / successful : 0.0);
+    printf("  Average Waiting Time       : %.1f mins\n",
+           successful > 0 ? totalWaitingTime / successful : 0.0);
+    printf("  Average Total Journey Time : %.1f mins\n",
+           successful > 0 ? (totalTravelTime + totalWaitingTime) / successful : 0.0);
+    printf("  Average Journey Distance   : %.1f km\n",
+           successful > 0 ? totalDistance / successful : 0.0);
+    printf("  Direct Trips               : %.1f%%\n",
+           successful > 0 ? directTrips * 100.0 / successful : 0.0);
+    printf("  1 Transfer Trips           : %.1f%%\n",
+           successful > 0 ? oneTransferTrips * 100.0 / successful : 0.0);
+    printf("  1+ Transfer Trips          : %.1f%%\n",
+           successful > 0 ? multiTransferTrips * 100.0 / successful : 0.0);
+    printf("  Execution Time             : %.6f seconds\n",
+           (double)(end - start) / CLOCKS_PER_SEC);
+}
+
 /*Main Function*/
 
 int main(void)
@@ -516,4 +763,9 @@ int main(void)
 
     printf("  Pettah -> Homagama\n");
     printPath(&city, 0, 8);
+
+    profiling();
+    exportJourneyRecords("journey_records.csv");
+
+    return 0;
 }
